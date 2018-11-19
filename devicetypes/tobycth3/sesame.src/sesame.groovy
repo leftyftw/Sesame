@@ -12,7 +12,7 @@
  
 preferences {
 	input(name: "apikey", type: "password", title: "API Key", required: "true", description: "A valid API token")
-	input(name: "threshold", type: "number", title: "Lock timeout threshold", defaultValue: "1", required: "true", description: "Number of minutes")
+	input(name: "threshold", type: "number", title: "Lock timeout threshold", defaultValue: "60", required: "true", description: "Number of seconds")
 }
   
   
@@ -78,7 +78,7 @@ def updated() {
 def init() {
 	log.info "Setting up Schedule (every 5 minutes)..."
 	login()
-	runEvery5Minute(poll)
+	runEvery5Minutes(poll)
 }
 
 
@@ -87,14 +87,14 @@ def lock() {
 	log.info "Executing lock"
 	
 	log.debug "Starting lock check timer"
-	def lockdelay = threshold * 60
+	def lockdelay = settings.threshold
 	runIn(lockdelay, doorlockcheck)
 
-	api('lock', '{"command":"lock"}') { resp ->
+	api('lock') { resp ->
 		//	log.trace "Lock response $response.status $response.data"
 
 		log.debug "Starting status check timer"
-		runIn(15, poll)		
+		runIn(lockdelay, poll)		
 	}
 }
 
@@ -102,14 +102,14 @@ def unlock() {
 	log.info "Executing unlock"
 
 	log.debug "Starting lock check timer"
-	def lockdelay = threshold * 60
+	def lockdelay = settings.threshold
 	runIn(lockdelay, doorlockcheck)
 
-	api('unlock', '{"command":"unlock"}') { resp ->
+	api('unlock') { resp ->
 		//	log.trace "Unlock response $response.status $response.data"
 
 		log.debug "Starting status check timer"
-		runIn(15, poll)	
+		runIn(lockdelay, poll)	
 	}
 }
 
@@ -171,78 +171,70 @@ def poll(){
 	    return
     }
     
-    def polldelay = threshold * 60000
-	if (!state.lastpoll) { state.lastpoll = now() }
-	if ((now() - state.lastpoll) >= polldelay) {
-        state.lastpoll = now()
 
-        log.info "Executing 'poll' on deviceID"
+	if (!state.lastDevicePoll || (state.lastDevicePoll + (30*60*1000)) < now()) {
+		log.info "Executing 'poll' on deviceID"
+		state.lastDevicePoll = now()
+		api('deviceID') { resp ->
+			log.trace "Device ID: ${resp.data[0].device_id}"
 
-        api('deviceID', []) { resp ->
-            log.trace "Device ID: ${resp.data[0].device_id}"
+			//	log.trace "Nickname: ${resp.data.nickname}"
+			def new_nickname = resp.data[0].nickname
+			def old_nickname = device.currentValue("nickname")
+			def nickname_changed = new_nickname != old_nickname
+			sendEvent(name: 'nickname', value: new_nickname, displayed: nickname_changed, isStateChange: nickname_changed)
+		}
+	}
 
-            //	log.trace "Nickname: ${resp.data.nickname}"
-            def new_nickname = resp.data[0].nickname
-            def old_nickname = device.currentValue("nickname")
-            def nickname_changed = new_nickname != old_nickname
-            sendEvent(name: 'nickname', value: new_nickname, displayed: nickname_changed, isStateChange: nickname_changed)	
+	log.info "Executing 'poll' on status"
 
-        }
+	api('status') { resp ->
 
-        log.info "Executing 'poll' on status"
+		//	log.trace "Locked: ${resp.data.locked}"
+		def is_locked = resp.data.locked
+		if (is_locked) { 
+			locked() 
+		}
+		else if (!is_locked) { 
+			unlocked()
+		}
+		else {
+			doorlockcheck()
+		}
 
-        api('status', []) { resp ->
-
-            //	log.trace "Locked: ${resp.data.locked}"
-            def is_locked = resp.data.locked
-            if (is_locked) { 
-                locked() 
-            }
-            else if (!is_locked) { 
-                unlocked()
-            }
-            else {
-                doorlockcheck()
-            }
-
-        //	log.trace "API: ${resp.data.responsive}"
-            def new_api = resp.data.responsive
-            if (new_api) { api_ok() }
-            else { api_failed() }
+	//	log.trace "API: ${resp.data.responsive}"
+		def new_api = resp.data.responsive
+		if (new_api) { api_ok() }
+		else { api_failed() }
 
 
-        //	log.trace "Battery: ${resp.data.battery}"
-            def new_battery = resp.data.battery
-            def old_battery = device.currentValue("battery")
-            def battery_changed = new_battery != old_battery
-            sendEvent(name: 'battery', value: new_battery, unit:"%", displayed: battery_changed, isStateChange: battery_changed)	
-        }
-    } 
-    else {
-		log.debug "Rate limiting API call - not enough time has elapsed"
-		// runIn(polldelay, poll)
+	//	log.trace "Battery: ${resp.data.battery}"
+		def new_battery = resp.data.battery
+		def old_battery = device.currentValue("battery")
+		def battery_changed = new_battery != old_battery
+		sendEvent(name: 'battery', value: new_battery, unit:"%", displayed: battery_changed, isStateChange: battery_changed)	
 	}
 }
   
   
-def api(method, args = [], success = {}) {
+def api(method, success = {}) {
 	// log.info "Executing 'api'"
 
 	def methods = [
-		'deviceID': [uri: "https://api.candyhouse.co/public/sesames", type: 'get'],
-		'lock': [uri: "https://api.candyhouse.co/public/sesame/$state.deviceID", type: 'post'],
-		'unlock': [uri: "https://api.candyhouse.co/public/sesame/$state.deviceID", type: 'post'],
-		'status': [uri: "https://api.candyhouse.co/public/sesame/$state.deviceID", type: 'get']
+		'deviceID': [uri: "http://home.torrespub.com/sesame/devices"],
+		'lock': [uri: "http://home.torrespub.com/sesame/$state.deviceID/lock"],
+		'unlock': [uri: "http://home.torrespub.com/sesame/$state.deviceID/unlock"],
+		'status': [uri: "http://home.torrespub.com/sesame/$state.deviceID/status"]
 	]
 
 	def request = methods.getAt(method)
 
 	log.debug "Starting $method : $args, request: $request.uri"
-	doRequest(request.uri, args, request.type, success)
+	doRequest(request.uri, success)
 }
 
-def doRequest(uri, args, type, success) {
-	log.debug "Calling $type : $uri : $args : $state"
+def doRequest(uri, success) {
+	log.debug "Calling $type : $uri : $state"
 
 	def params = [
 		uri: uri,
@@ -255,21 +247,18 @@ def doRequest(uri, args, type, success) {
 	// log.trace params
 
 	try {
-		if (type == 'post') {
-        	params.body = args
-			httpPostJson(params, success)
-		} else if (type == 'get') {
-			httpGet(params, success)
-		}
-
+		httpGet(params, success)
 	} catch (e) {
 		log.debug "something went wrong: $e"
- 		// log out session	
-		logout()
 	}
 }
 
 def login() { 
+	if (settings.threshold < 15) {
+		log.warn 'Threshold too short.  Defaulting to 15s'
+		settings.threshold = 15
+	}
+
 	log.info "Executing 'login'"
     state.auth = settings.apikey
     // get device ID
@@ -278,14 +267,8 @@ def login() {
 
 def deviceID() {
 	log.info "Executing 'device ID'"
-
-	api('deviceID', []) { resp ->
-		// log.trace "Device ID: ${resp.data[0].device_id}"
+	api('deviceID') { resp ->
+		log.trace "Device ID: ${resp.data[0].device_id}"
 		state.deviceID = resp.data[0].device_id
- 	}
-}
-
-def logout() { 
-	log.info "Executing 'logout'"
-	state.auth = false		
+	}
 }
