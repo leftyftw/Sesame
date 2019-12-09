@@ -221,10 +221,10 @@ def api(method, success = {}) {
 	// log.info "Executing 'api'"
 
 	def methods = [
-		'deviceID': [uri: "http://home.torrespub.com/sesame/devices"],
-		'lock': [uri: "http://home.torrespub.com/sesame/$state.deviceID/lock"],
-		'unlock': [uri: "http://home.torrespub.com/sesame/$state.deviceID/unlock"],
-		'status': [uri: "http://home.torrespub.com/sesame/$state.deviceID/status"]
+		'deviceID': [uri: "https://sesame-hack.herokuapp.com/sesame/devices"],
+		'lock': [uri: "https://sesame-hack.herokuapp.com/sesame/$state.deviceID/lock"],
+		'unlock': [uri: "https://sesame-hack.herokuapp.com/sesame/$state.deviceID/unlock"],
+		'status': [uri: "https://sesame-hack.herokuapp.com/sesame/$state.deviceID/status"]
 	]
 
 	def request = methods.getAt(method)
